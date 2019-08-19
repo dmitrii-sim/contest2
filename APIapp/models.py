@@ -18,6 +18,7 @@ class CitizenInfo(models.Model):
     birth_date = models.DateField()
     gender = models.CharField(max_length=10, choices=GENDER_CHOICES)
     # Приходит в виде номера PK по дефолту, нужно будет вручную исправлять при передаче и приеме
+    # TODO если не найду оптимальный способ валдиации, то смысла в many to many нет. Проще тогда вручную будет валидировать
     relatives = models.ManyToManyField('self', blank=True)
 
     def __str__(self):

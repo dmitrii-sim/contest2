@@ -8,15 +8,21 @@ from datetime import datetime
 
 def save_citizens(citizen_data, current_import_id):
     # birth_date в БД кладется в формате Django (Y-d-m)
-    new_citizen = CitizenInfo(import_id=current_import_id, citizen_id=citizen_data.get('citizen_id'),
-                                             town=citizen_data.get('town'), street=citizen_data.get('street'),
-                                             building=citizen_data.get('building'),
-                                             apartment=citizen_data.get('apartment'),
-                                             name=citizen_data.get('name'), birth_date=citizen_data.get('birth_date'))
+    new_citizen = CitizenInfo(import_id=current_import_id,
+                              citizen_id=citizen_data.get('citizen_id'),
+                              town=citizen_data.get('town'),
+                              street=citizen_data.get('street'),
+                              building=citizen_data.get('building'),
+                              apartment=citizen_data.get('apartment'),
+                              name=citizen_data.get('name'),
+                              birth_date=citizen_data.get('birth_date'),
+                              gender=citizen_data.get('gender'),
+                              )
     current_import_citizens = CitizenInfo.objects.filter(import_id=current_import_id)
     for relative in citizen_data.get('relatives'):
         new_citizen.relatives.add(relative)
     return new_citizen
+
 
 class BulkCitizensSerializer(serializers.ListSerializer):
 
@@ -31,15 +37,26 @@ class BulkCitizensSerializer(serializers.ListSerializer):
             previous_import_id = 0
         current_import_id = previous_import_id + 1
         # Инстансы для return
-        new_citizens = [save_citizens(citizen_data, current_import_id) for citizen_data in validated_data]
+        new_citizens = []
+        for citizen_data in validated_data:
+            # relatives =
+            new_citizen = save_citizens(citizen_data, current_import_id)
+            new_citizens.append(new_citizen)
+        # new_citizens = [save_citizens(citizen_data, current_import_id) for citizen_data in validated_data]
         return CitizenInfo.objects.bulk_create(new_citizens), current_import_id
 
 
 
 class CitizenListSerializer(serializers.ModelSerializer):
+    # Переопределяю сериалайзер для того, чтобы написать кастомную валидацию
+    # Иначе он сразу пытался делать валидацию m2m (согласно своей модели)
+    # на еще не созданные объекты
+    relatives = serializers.ListField()
 
-    # Валидатор неизвестных полей в запросе
+    # Добавляем кастомную валидацию неизвестных полей в запросе и поля relatives
     def run_validation(self, data=empty):
+        # TODO потестить что будет если data is empty? Как это вообще?
+        # TODO и что будет с данными relatives
         if data is not empty:
             unknown = set(data) - set(self.fields)
             if unknown:
@@ -47,7 +64,21 @@ class CitizenListSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({
                     api_settings.NON_FIELD_ERRORS_KEY: errors,
                 })
+        citizen_relatives = data.get('relatives')
+        print(citizen_relatives)
         return super(CitizenListSerializer, self).run_validation(data)
+
+    def validate(self, attrs):
+        # Здесь логика валидации родственных связей. Если все ок, то дальше
+        # просто сохраним в bulk сериализаторе средствами Django m2m.
+        # TODO если действительно копим, то выкидывать ошибку сразу, без продолжения
+        # Если поля не соответствуют, то копим и отдаем ошибки валидации.
+        # Валидируем все поля каждого объекта post запроса, при этом запоминая
+        # родственные связи и попутно проверяя имеющиеся.
+        attrs = super(CitizenListSerializer, self).validate(attrs)
+        # if not Activity.objects.filter(members=self.context['request'].user).exists():
+        #     raise serializers.ValidationError("your validation error")
+        return attrs
 
     class Meta:
         model = CitizenInfo

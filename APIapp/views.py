@@ -8,11 +8,13 @@ from .models import CitizenInfo
 from rest_framework import status
 
 class CitizenInfoView(APIView):
-    # TODO разобраться с сериализацией, serializer.data не работает (там ошибка, формат str)
+    # TODO ошибка serializer.data была из-за формата Даты в БД и
+    # переопределенного в settings формата даты с которым работает drf
+    # Исправить отображение даты в get запросах
     def get(self, request, import_id):
-        all_citizens = CitizenInfo.objects.filter(import_id=import_id)
-        serializer = CitizenListSerializer(all_citizens, many=True)
-        return Response({"data": all_citizens})
+        all_import_citizens = CitizenInfo.objects.filter(import_id=import_id)
+        serializer = CitizenListSerializer(instance=all_import_citizens, many=True)
+        return Response({"data": serializer.data})
 
 
 class CitizenInfoImportView(APIView):
