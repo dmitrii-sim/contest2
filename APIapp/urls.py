@@ -1,10 +1,10 @@
 from django.contrib import admin
 from django.urls import path, include
-from .views import CitizenCreateView, CitizenListView
+from .views import CitizenInfoView, CitizenInfoImportView
 
 
 urlpatterns = [
-    path('imports', CitizenCreateView.as_view()),
-    path('imports/<int:import_id>/citizens', CitizenListView.as_view()),
+    path('imports', CitizenInfoImportView.as_view()),
+    path('imports/<int:import_id>/citizens', CitizenInfoView.as_view()),
 
 ]

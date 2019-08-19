@@ -7,7 +7,6 @@ GENDER_CHOICES = [
     ("female", "female"),
 ]
 
-
 class CitizenInfo(models.Model):
     citizen_id = models.PositiveIntegerField()
     import_id = models.PositiveIntegerField()
@@ -16,11 +15,14 @@ class CitizenInfo(models.Model):
     building = models.CharField(max_length=255)
     apartment = models.PositiveIntegerField()
     name = models.CharField(max_length=255)
-    bitrh_date = models.DateField()
+    birth_date = models.DateField()
     gender = models.CharField(max_length=10, choices=GENDER_CHOICES)
     # Приходит в виде номера PK по дефолту, нужно будет вручную исправлять при передаче и приеме
     relatives = models.ManyToManyField('self', blank=True)
 
+    def __str__(self):
+        return 'Citizen {} from Import {}'.format(self.citizen_id, self.import_id)
+
     class Meta:
-        # Айдишники импорта и человека образуют уникальную пару
+        # Айдишники импорта и гражданина образуют уникальную пару
         unique_together = ('import_id', 'citizen_id',)
