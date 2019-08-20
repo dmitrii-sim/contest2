@@ -15,10 +15,12 @@ class CitizenInfo(models.Model):
     building = models.CharField(max_length=255)
     apartment = models.PositiveIntegerField()
     name = models.CharField(max_length=255)
+    # Хранит значения в виде Y-m-d. При сериализации
+    # преобразуем в d.m.Y
     birth_date = models.DateField()
     gender = models.CharField(max_length=10, choices=GENDER_CHOICES)
-    # Приходит в виде номера PK по дефолту, нужно будет вручную исправлять при передаче и приеме
-    # TODO если не найду оптимальный способ валдиации, то смысла в many to many нет. Проще тогда вручную будет валидировать
+    # Хранит значения в виде pk. При сериализации преобразуем в список
+    # из citizen_id в рамках импорта.
     relatives = models.ManyToManyField('self', blank=True)
 
     def __str__(self):
@@ -26,4 +28,5 @@ class CitizenInfo(models.Model):
 
     class Meta:
         # Айдишники импорта и гражданина образуют уникальную пару
+        ordering = ['citizen_id']
         unique_together = ('import_id', 'citizen_id',)
