@@ -5,9 +5,7 @@ from .models import CitizenInfo
 from django.db.models import Max
 from datetime import datetime
 from rest_framework.exceptions import APIException
-
-
-# TODO может ли человек быть сам себе родственником??? citizen_id: 1, relatives: [1, 2, 3]
+from django.shortcuts import get_object_or_404
 
 
 
@@ -37,15 +35,14 @@ def save_citizens(citizen_data, current_import_id):
     # будем сохранять постепенно, по мере создания граждан
     relatives_id_list = citizen_data.get('relatives')
     # В рамках одного импорта citizen_id == relative_id
-    relative_pk_list = []
     for relative_id in relatives_id_list:
         # Если объекта нет, то продолжаем цикл
         try:
-            relative_pk = importing_citizens.get(citizen_id=relative_id)
+            relative_instance = importing_citizens.get(citizen_id=relative_id)
         except:
             continue
-        # Добавляем каждого родственника по-одному
-        new_citizen.relatives.add(relative_pk)
+        # Добавляем инстанс каждого родственника по-одному
+        new_citizen.relatives.add(relative_instance)
 
 
 class BulkCitizensSerializer(serializers.ListSerializer):
@@ -92,7 +89,7 @@ class CitizenListSerializer(serializers.ModelSerializer):
     # Переопределяю сериализатор для того, чтобы написать кастомную валидацию
     # Иначе он сразу пытался делать валидацию m2m (согласно своей модели)
     # на еще не созданные объекты
-    relatives = serializers.ListField()
+    relatives = serializers.ListField(child=serializers.IntegerField())
 
     # Добавляем кастомную валидацию неизвестных полей в запросе.
     # Дополняем словарь relatives для последующей валидации в create
@@ -121,3 +118,54 @@ class ImportDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = CitizenInfo
         exclude = ['id', 'import_id', ]
+
+
+class PatchSerializer(serializers.ModelSerializer):
+    relatives = serializers.ListField(child=serializers.IntegerField())
+
+    class Meta:
+        model = CitizenInfo
+        exclude = ['id', 'import_id', ]
+
+    def validate_citizen_id(self, value):
+        """Запрещаем менять citizen_id"""
+        raise serializers.ValidationError("Citizen_id can't be changed")
+
+    def validate_relatives(self, value):
+        """Преобразуем relatives_id в relatives_pk"""
+        import_id = self.instance.import_id
+        relatives_pk_list = []
+        for citizen_id in value:
+            citizen_pk = get_object_or_404(CitizenInfo, import_id=import_id,
+                                            citizen_id=citizen_id).pk
+            relatives_pk_list.append(citizen_pk)
+        return relatives_pk_list
+
+    def to_representation(self, instance):
+        """Меняем отображение на PATCH запрос в случае успеха.
+        Разбираемся с m2m отображением, а так же днём рождения"""
+        citizen_pk = instance.pk
+        citizen = CitizenInfo.objects.filter(pk=citizen_pk)
+        relatives_pk = citizen.values_list('relatives', flat=True)
+        relatives_id_list = []
+        if not relatives_pk:
+            for relative_pk in relatives_pk:
+                relative_id = get_object_or_404(CitizenInfo,
+                                                pk=relative_pk).citizen_id
+                relatives_id_list.append(relative_id)
+        # Сортирую по порядку, вдруг важно при отображении
+        relatives_id_list.sort()
+        # Нужный формат дня рождения
+        JSON_birth_date = datetime.strptime(str(instance.birth_date),
+                                            '%Y-%m-%d').strftime('%d.%m.%Y')
+        # Не нашел адекватного способа обойти ошибку сериализации m2m у
+        # instance, поэтому вручную возвращаю ответ
+        return {"citizen_id": instance.citizen_id,
+                "town": instance.town,
+                "street": instance.street,
+                "building": instance.building,
+                "apartment": instance.apartment,
+                "name": instance.name,
+                "birth_date": JSON_birth_date,
+                "gender": instance.gender,
+                "relatives": relatives_id_list}
