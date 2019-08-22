@@ -4,13 +4,21 @@ from rest_framework.settings import api_settings
 from .models import CitizenInfo
 from django.db.models import Max
 from datetime import datetime
-from rest_framework.exceptions import APIException
 from django.shortcuts import get_object_or_404
-
 
 
 # Словарь citizen_id: relatives_id в рамках импорта для валидации relative
 relatives_dict = {}
+
+
+# def current_import_id():
+#     """Определяет номер текущего импорта для POST запроса"""
+#     previous_import_id = CitizenInfo.objects.aggregate(Max('import_id'))[
+#         'import_id__max']
+#     if not previous_import_id:
+#         previous_import_id = 0
+#     current_import_id = previous_import_id + 1
+#     return current_import_id
 
 
 # Логика полного сохранения гражданина
@@ -46,18 +54,21 @@ def save_citizens(citizen_data, current_import_id):
 
 
 class BulkCitizensSerializer(serializers.ListSerializer):
+    """
+    Логика сохранения объектов для POST запроса в create. Всё ради m2m
+    Сюда приходят валидные данные по всем полям, кроме relatives.
+    Делаем для relatives кастомную валидацию.
+    Далее сохраняем в нужном виде relatives.
+    """
 
-    # Сюда приходят валидные данные по всем полям, кроме relatives
-    # Делаем для relatives кастомную валидацию.
-    # Далее сохраняем в нужном виде relatives, добавляем значение
-    # для поля import_id
     def create(self, validated_data):
         # Валидация поля relatives у всех граждан.
         # TODO хорошенько протестировать валидацию родственников
         for citizen_data in validated_data:
             citizen_id = citizen_data.get('citizen_id')
             for relative_id in citizen_data.get('relatives'):
-                # Гарантировано, что значения уникальные и существуют.
+                # Гарантировано, что значения уникальные и существуют, но
+                # на всякий случай проверяю существование.
                 try:
                     relatives_dict[relative_id]
                 except:
@@ -65,35 +76,55 @@ class BulkCitizensSerializer(serializers.ListSerializer):
                         'At least one of the relatives_id does not exist.')
                 if citizen_id in relatives_dict[relative_id]:
                     # Экономим время, если нашли симметрию, то удаляем
-                    # текущего гражданина из "родственников" его родственника
+                    # текущего гражданина из "родственников" его родственника,
+                    # Что бы не проверять по два раза
                     relatives_dict[relative_id].remove(citizen_id)
                 # Если находим несовпадение, то сразу отдаем 400 BAD_REQUEST
                 elif citizen_id not in relatives_dict[relative_id]:
                     raise serializers.ValidationError(
                         'At least one of the relatives_id is not matching.')
-        # Достаем номер последнего импорта
-        # в формате словаря {'import_id__max': *число*}
-        # И определяем текущий импорт
-        previous_import_id = CitizenInfo.objects.aggregate(Max('import_id'))['import_id__max']
-        if not previous_import_id:
-            previous_import_id = 0
-        current_import_id = previous_import_id + 1
+        # Достаем из контекста номер текущего импорта
+        current_import_id = self.context.get('current_import_id')
         # Сохраняем валидные объект
         for citizen_data in validated_data:
             save_citizens(citizen_data, current_import_id)
-        return CitizenInfo.objects.filter(import_id=current_import_id),\
-               current_import_id
+        return CitizenInfo.objects.filter(import_id=current_import_id)
 
+    def save(self, ):
+    pass
 
 class CitizenListSerializer(serializers.ModelSerializer):
+    """
+    Сериализатор для POST запроса. Логика сохранения в BulkCitizensSerializer
+    """
     # Переопределяю сериализатор для того, чтобы написать кастомную валидацию
     # Иначе он сразу пытался делать валидацию m2m (согласно своей модели)
     # на еще не созданные объекты
     relatives = serializers.ListField(child=serializers.IntegerField())
 
-    # Добавляем кастомную валидацию неизвестных полей в запросе.
-    # Дополняем словарь relatives для последующей валидации в create
+    def validate_birth_date(self, value):
+        """
+        Валидация дня рождения
+        Проверяем, чтобы дата была не позже чем сегодня
+        """
+        birth_date = value
+        current_date = datetime.now().date()
+        if birth_date > current_date:
+            raise serializers.ValidationError("Birth_date can't be "
+                                              "after current date")
+        return value
+
+
     def run_validation(self, data=empty):
+        """
+        Валидация неизвестных полей в запросе. Отдаем 400, если есть
+        Так же здесь подготовка к общей валидации relatives, которая будет
+        проходить с данными из глобального
+        словаря relatives_dict, в сериализаторе BulkCitizensSerializer
+
+        Добавляем в глобальный словарь {"id гражданина": [id его родственников]}
+        для последующей валидации.
+        """
         if data is not empty:
             unknown = set(data) - set(self.fields)
             if unknown:
@@ -101,8 +132,8 @@ class CitizenListSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({
                     api_settings.NON_FIELD_ERRORS_KEY: errors,
                 })
-        citizen_id = data.get('citizen_id')
-        relatives_id_list = data.get('relatives')
+        citizen_id = data['citizen_id']
+        relatives_id_list = data['relatives']
         # Добавляем список id родственников в общий словарь граждан
         relatives_dict[citizen_id] = relatives_id_list
         return super(CitizenListSerializer, self).run_validation(data)
@@ -110,17 +141,19 @@ class CitizenListSerializer(serializers.ModelSerializer):
     class Meta:
         model = CitizenInfo
         exclude = ['id', 'import_id', ]
+        # Для доступа ко всем инстансам разом используем доп сериализатор
         list_serializer_class = BulkCitizensSerializer
 
 
 class ImportDetailSerializer(serializers.ModelSerializer):
-    # Сериализатор для GET
+
     class Meta:
         model = CitizenInfo
         exclude = ['id', 'import_id', ]
 
 
 class PatchSerializer(serializers.ModelSerializer):
+    """Сериализатор для PATCH запроса"""
     relatives = serializers.ListField(child=serializers.IntegerField())
 
     class Meta:
@@ -131,15 +164,35 @@ class PatchSerializer(serializers.ModelSerializer):
         """Запрещаем менять citizen_id"""
         raise serializers.ValidationError("Citizen_id can't be changed")
 
+    def validate_birth_date(self, value):
+        """Проверяем, чтобы дата была не позже чем сегодня"""
+        birth_date = value
+        current_date = datetime.now().date()
+        if birth_date > current_date:
+            raise serializers.ValidationError("Birth_date can't be "
+                                              "after current date")
+        return value
+
     def validate_relatives(self, value):
         """Преобразуем relatives_id в relatives_pk"""
         import_id = self.instance.import_id
         relatives_pk_list = []
         for citizen_id in value:
             citizen_pk = get_object_or_404(CitizenInfo, import_id=import_id,
-                                            citizen_id=citizen_id).pk
+                                           citizen_id=citizen_id).pk
             relatives_pk_list.append(citizen_pk)
         return relatives_pk_list
+
+    def run_validation(self, data=empty):
+        """Валидация неизвестных полей. Отдаем 400, если есть."""
+        if data is not empty:
+            unknown = set(data) - set(self.fields)
+            if unknown:
+                errors = ["Unknown field: {}".format(f) for f in unknown]
+                raise serializers.ValidationError({
+                    api_settings.NON_FIELD_ERRORS_KEY: errors,
+                })
+        return super(PatchSerializer, self).run_validation(data)
 
     def to_representation(self, instance):
         """Меняем отображение на PATCH запрос в случае успеха.
@@ -148,8 +201,12 @@ class PatchSerializer(serializers.ModelSerializer):
         citizen = CitizenInfo.objects.filter(pk=citizen_pk)
         relatives_pk = citizen.values_list('relatives', flat=True)
         relatives_id_list = []
-        if not relatives_pk:
+        # Сюда попадает None
+        # TODO исправить!
+        if relatives_pk:
             for relative_pk in relatives_pk:
+                if relative_pk == None:
+                    break
                 relative_id = get_object_or_404(CitizenInfo,
                                                 pk=relative_pk).citizen_id
                 relatives_id_list.append(relative_id)
@@ -169,3 +226,11 @@ class PatchSerializer(serializers.ModelSerializer):
                 "birth_date": JSON_birth_date,
                 "gender": instance.gender,
                 "relatives": relatives_id_list}
+
+
+class CitizensAgeSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = CitizenInfo
+        exclude = ['id', 'import_id', ]
+

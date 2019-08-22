@@ -6,7 +6,17 @@ from .models import CitizenInfo
 from rest_framework import status
 from datetime import datetime
 from django.shortcuts import get_object_or_404
+import numpy as np
+from django.db.models import Max
 
+
+def get_current_import():
+    previous_import_id = CitizenInfo.objects.aggregate(Max('import_id'))[
+        'import_id__max']
+    if not previous_import_id:
+        previous_import_id = 0
+    current_import_id = previous_import_id + 1
+    return current_import_id
 
 class CitizenInfoView(APIView):
 
@@ -46,49 +56,22 @@ class CitizenInfoImportView(APIView):
             return Response('JSON should represent a dict {"citizens": value} '
                             'with correct value-type object',
                             status=status.HTTP_400_BAD_REQUEST)
-        serializer = CitizenListSerializer(data=citizens, many=True)
+        # Определяем номер текущего импорта для POST запроса
+        current_import_id = get_current_import()
+        serializer = CitizenListSerializer(context={"current_import_id":
+                                                    current_import_id},
+                                           data=citizens,
+                                           many=True)
         if serializer.is_valid():
-            serializer_response = serializer.save()
+            #
+            serializer.save()
             # В кастомном ответе сериализатора получаем айдишник текущего импорта
             # И отдаем его в качестве ответа, при успешном сохранении
-            current_import_id = serializer_response[1]
+            current_import_id = serializer.context['current_import_id']
             return Response({"data": {"import_id": current_import_id}},
                             status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-    def patch(self, request, import_id, citizen_id):
-        # Проверка на наличие поля citizen_id в запросе
-        try:
-            if request.data.pop('citizen_id'):
-                return Response("Citizen_id can't be changed",
-                                status=status.HTTP_400_BAD_REQUEST)
-        except:
-            pass
-
-        # TODO понять возвращать при неверном url 400 или 404 тоже можно
-        citizen_object = get_object_or_404(CitizenInfo,
-                                           import_id=import_id,
-                                           citizen_id=citizen_id)
-        citizens_from_import = CitizenInfo.objects.filter(import_id=import_id)
-        # TODO проверить возврат relatives обратно в запрос
-        # здесь получаем вытаскиваем relatives, если они есть и преобразуем
-        try:
-            relatives_id_list = request.data.pop('relatives')
-            relatives_pk_list = []
-            for relative_id in relatives_id_list:
-                relative_pk = citizens_from_import.get(citizen_id=relative_id).pk
-                relatives_pk_list.append(relative_pk)
-            request.data['relatives'] = relatives_pk_list
-        except:
-            pass
-
-        serializer = ImportDetailSerializer(citizen_object, data=request.data, partial=True)
-        if serializer.is_valid():
-
-            serializer.save()
-            return Response({"data": serializer.data})
-        return Response(serializer.errors,
-                        status=status.HTTP_400_BAD_REQUEST)
 
 
 class CitizenPatch(APIView):
@@ -113,3 +96,59 @@ class CitizenPatch(APIView):
             return Response({"data": serializer.data})
         return Response(serializer.errors,
                         status=status.HTTP_400_BAD_REQUEST)
+
+
+class CitizenGifts(APIView):
+
+    def get(self, request, import_id):
+        all_import_citizens = CitizenInfo.objects.filter(import_id=import_id)
+        # Определяем структуру ответа
+        serializer = ImportDetailSerializer(all_import_citizens, many=True)
+        result_dict = {"1": [], "2": [], "3": [], "4": [], "5": [], "6": [],
+                       "7": [], "8": [], "9": [], "10": [], "11": [], "12": []}
+        for citizen in serializer.data:
+            citizen_id = citizen.get('citizen_id')
+            relatives_pk_list = citizen.get('relatives')
+            if relatives_pk_list:
+                relatives_obj = all_import_citizens.filter(pk__in=relatives_pk_list)
+                for month in range(1, 13):
+                    # Считаем число родственников с ДР в этом месяце (число подарков)
+                    presents = relatives_obj.filter(birth_date__month=month).count()
+                    # Если нет подарков, то запись не делаем
+                    if presents != 0:
+                        result_dict[str(month)].append({"citizen_id": citizen_id,
+                                                        "presents": presents})
+        return Response({"data": result_dict})
+
+
+class CitizensAge(APIView):
+    def get(self, requset, import_id):
+        all_import_citizens = CitizenInfo.objects.filter(import_id=import_id)
+        # Уникальный список всех городов из импорта
+        town_list = all_import_citizens.order_by(
+            'town').values_list('town', flat=True).distinct()
+        result_list = []
+
+        for town in town_list:
+            age_list = []
+            town_citizens = all_import_citizens.filter(town=town)
+            for citizen in town_citizens:
+                # Вычисляем возраст каждого человека
+                birth_date = citizen.birth_date
+                current_date = datetime.now().date()
+                delta_date = (current_date - birth_date).days
+                # year_date = float(date) / 365.2425
+                difference_in_years = delta_date / 365.2425
+                age_list.append(difference_in_years)
+            result_dict = {}
+            # Находим перцентили возраста для каждого города
+            age_list = np.array(age_list)
+            p50 = round(np.percentile(age_list, 50), 2)
+            p75 = round(np.percentile(age_list, 75), 2)
+            p99 = round(np.percentile(age_list, 99), 2)
+            result_dict['town'] = town
+            result_dict['p50'] = p50
+            result_dict['p75'] = p75
+            result_dict['p99'] = p99
+            result_list.append(result_dict)
+        return Response({"data": result_list})
