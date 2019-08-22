@@ -1,6 +1,6 @@
 from django.urls import path
 from .views import CitizenInfoView, CitizenInfoImportView, CitizenPatch, \
-    CitizensAge, CitizenGifts
+    CitizensAgeView, CitizensPresentsView
 
 
 urlpatterns = [
@@ -9,7 +9,7 @@ urlpatterns = [
     path('imports/<int:import_id>/citizens/<int:citizen_id>',
          CitizenPatch.as_view()),
     path('imports/<int:import_id>/citizens/birthdays',
-         CitizenGifts.as_view()),
+         CitizensPresentsView.as_view()),
     path('imports/<int:import_id>/towns/stat/percentile/age',
-         CitizensAge.as_view()),
+         CitizensAgeView.as_view()),
 ]

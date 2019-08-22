@@ -1,16 +1,21 @@
+from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from .serializers import CitizenListSerializer, ImportDetailSerializer, \
+
+from .serializers import CitizenListSerializer, CitizenInfoGetSerializer, \
     PatchSerializer
 from .models import CitizenInfo
-from rest_framework import status
-from datetime import datetime
+
 from django.shortcuts import get_object_or_404
-import numpy as np
 from django.db.models import Max
+
+from datetime import datetime
+import numpy as np
+
 
 
 def get_current_import():
+    """Определяет номер текущего импорта для POST запроса"""
     previous_import_id = CitizenInfo.objects.aggregate(Max('import_id'))[
         'import_id__max']
     if not previous_import_id:
@@ -21,8 +26,9 @@ def get_current_import():
 class CitizenInfoView(APIView):
 
     def get(self, request, import_id):
+        """Возвращает список граждан текущего импорта"""
         all_import_citizens = CitizenInfo.objects.filter(import_id=import_id)
-        serializer = ImportDetailSerializer(all_import_citizens, many=True)
+        serializer = CitizenInfoGetSerializer(all_import_citizens, many=True)
         # У каждого объекта приводим уникальный в рамках всех импортов номер
         # родственника из бд к уникальному в рамках импорта для отображения
         for citizen in serializer.data:
@@ -48,6 +54,7 @@ class CitizenInfoView(APIView):
 class CitizenInfoImportView(APIView):
 
     def post(self, request):
+        """Валидация, сериализация и сохранение переданных объектов"""
         # Пробуем распаковать начальный словарь, если нет, то bad_request
         # Заодно отсеиваем всю поломанную структуру json, здесь допустимо
         try:
@@ -63,11 +70,9 @@ class CitizenInfoImportView(APIView):
                                            data=citizens,
                                            many=True)
         if serializer.is_valid():
-            #
             serializer.save()
-            # В кастомном ответе сериализатора получаем айдишник текущего импорта
-            # И отдаем его в качестве ответа, при успешном сохранении
             current_import_id = serializer.context['current_import_id']
+            # При успешном сохранении возвращаем номер импорта
             return Response({"data": {"import_id": current_import_id}},
                             status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -75,15 +80,12 @@ class CitizenInfoImportView(APIView):
 
 
 class CitizenPatch(APIView):
-    # TODO потестить patch
+
     def patch(self, request, import_id, citizen_id):
-        # Проверка на наличие поля citizen_id в запросе
-        # try:
-        #     if request.data.pop('citizen_id'):
-        #         return Response("Citizen_id can't be changed",
-        #                         status=status.HTTP_400_BAD_REQUEST)
-        # except:
-        #     pass
+        """
+        Частичное либо полное обновление инстанса.
+        citizen_id изменять запрещено.
+        """
         # TODO поменять либо описать 404 возвраты, а то неясно откуда.
         # 404 если гражданин не найден
         citizen_object = get_object_or_404(CitizenInfo,
@@ -98,12 +100,17 @@ class CitizenPatch(APIView):
                         status=status.HTTP_400_BAD_REQUEST)
 
 
-class CitizenGifts(APIView):
+class CitizensPresentsView(APIView):
 
     def get(self, request, import_id):
+        """
+        Получаем список месяцев, в каждом указан номер гражданина из
+        импорта и сколько подарков в этом месяце он должен подарить.
+        """
         all_import_citizens = CitizenInfo.objects.filter(import_id=import_id)
+        # Можно без сериализации, но так удобнее
+        serializer = CitizenInfoGetSerializer(all_import_citizens, many=True)
         # Определяем структуру ответа
-        serializer = ImportDetailSerializer(all_import_citizens, many=True)
         result_dict = {"1": [], "2": [], "3": [], "4": [], "5": [], "6": [],
                        "7": [], "8": [], "9": [], "10": [], "11": [], "12": []}
         for citizen in serializer.data:
@@ -111,9 +118,10 @@ class CitizenGifts(APIView):
             relatives_pk_list = citizen.get('relatives')
             if relatives_pk_list:
                 relatives_obj = all_import_citizens.filter(pk__in=relatives_pk_list)
-                for month in range(1, 13):
-                    # Считаем число родственников с ДР в этом месяце (число подарков)
-                    presents = relatives_obj.filter(birth_date__month=month).count()
+                for month in result_dict:
+                    # Считаем число родственников с ДР в этом месяце (подарки)
+                    presents = relatives_obj.filter(
+                        birth_date__month=month).count()
                     # Если нет подарков, то запись не делаем
                     if presents != 0:
                         result_dict[str(month)].append({"citizen_id": citizen_id,
@@ -121,8 +129,12 @@ class CitizenGifts(APIView):
         return Response({"data": result_dict})
 
 
-class CitizensAge(APIView):
+class CitizensAgeView(APIView):
     def get(self, requset, import_id):
+        """
+        Возвращает значение перцентилей по возрасту для каждого города
+        из импорта.
+        """
         all_import_citizens = CitizenInfo.objects.filter(import_id=import_id)
         # Уникальный список всех городов из импорта
         town_list = all_import_citizens.order_by(

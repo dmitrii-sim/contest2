@@ -1,28 +1,19 @@
 from rest_framework import serializers
 from rest_framework.fields import empty
 from rest_framework.settings import api_settings
+
 from .models import CitizenInfo
-from django.db.models import Max
-from datetime import datetime
 from django.shortcuts import get_object_or_404
+
+from datetime import datetime
 
 
 # Словарь citizen_id: relatives_id в рамках импорта для валидации relative
 relatives_dict = {}
 
 
-# def current_import_id():
-#     """Определяет номер текущего импорта для POST запроса"""
-#     previous_import_id = CitizenInfo.objects.aggregate(Max('import_id'))[
-#         'import_id__max']
-#     if not previous_import_id:
-#         previous_import_id = 0
-#     current_import_id = previous_import_id + 1
-#     return current_import_id
-
-
-# Логика полного сохранения гражданина
 def save_citizens(citizen_data, current_import_id):
+    """Логика полного сохранения гражданина"""
     new_citizen = CitizenInfo(import_id=current_import_id,
                               citizen_id=citizen_data.get('citizen_id'),
                               town=citizen_data.get('town'),
@@ -34,17 +25,18 @@ def save_citizens(citizen_data, current_import_id):
                               gender=citizen_data.get('gender'),
                               )
     # Сохраняем, так как добавление m2m поля должно быть к существующему объекту
-    # Получается, что объекты у нас сохраняются не разом в return, а постепенно
-    # TODO попробовать что-то решить, но скорее всего нет, т.к m2m
+    # и по одному инстансу
+    # К этому моменту мы должны быть уверены, что все данные прошли валидацию,
+    # иначе засоряется БД и сбивается import_id.
     new_citizen.save()
+    # Далее достаем сохраненные объекты данного импорта уже из БД
     importing_citizens = CitizenInfo.objects.filter(import_id=current_import_id)
-    # Здесь ожидаем уже валидированных родственников
-    # Так как наша связь many2many симметрична, то список родственников
-    # будем сохранять постепенно, по мере создания граждан
+    # Поле родственников будем сохранять постепенно, по мере создания граждан
     relatives_id_list = citizen_data.get('relatives')
     # В рамках одного импорта citizen_id == relative_id
     for relative_id in relatives_id_list:
-        # Если объекта нет, то продолжаем цикл
+        # Если родственник еще не сохранен в БД, то просто продолжаем цикл,
+        # так как связь симметричная и далее он все-равно попадет в родственники
         try:
             relative_instance = importing_citizens.get(citizen_id=relative_id)
         except:
@@ -62,8 +54,8 @@ class BulkCitizensSerializer(serializers.ListSerializer):
     """
 
     def create(self, validated_data):
+        """Здесь валидация поля relatives, а так же сохранение объектов"""
         # Валидация поля relatives у всех граждан.
-        # TODO хорошенько протестировать валидацию родственников
         for citizen_data in validated_data:
             citizen_id = citizen_data.get('citizen_id')
             for relative_id in citizen_data.get('relatives'):
@@ -77,7 +69,7 @@ class BulkCitizensSerializer(serializers.ListSerializer):
                 if citizen_id in relatives_dict[relative_id]:
                     # Экономим время, если нашли симметрию, то удаляем
                     # текущего гражданина из "родственников" его родственника,
-                    # Что бы не проверять по два раза
+                    # Что бы не проверять по два раза. Сохранению не помешает.
                     relatives_dict[relative_id].remove(citizen_id)
                 # Если находим несовпадение, то сразу отдаем 400 BAD_REQUEST
                 elif citizen_id not in relatives_dict[relative_id]:
@@ -90,16 +82,15 @@ class BulkCitizensSerializer(serializers.ListSerializer):
             save_citizens(citizen_data, current_import_id)
         return CitizenInfo.objects.filter(import_id=current_import_id)
 
-    def save(self, ):
-    pass
 
 class CitizenListSerializer(serializers.ModelSerializer):
     """
     Сериализатор для POST запроса. Логика сохранения в BulkCitizensSerializer
     """
-    # Переопределяю сериализатор для того, чтобы написать кастомную валидацию
+    # Переопределяю сериализатор поля relatives для того, чтобы написать
+    # его кастомную валидацию.
     # Иначе он сразу пытался делать валидацию m2m (согласно своей модели)
-    # на еще не созданные объекты
+    # на еще не созданные объекты.
     relatives = serializers.ListField(child=serializers.IntegerField())
 
     def validate_birth_date(self, value):
@@ -145,8 +136,8 @@ class CitizenListSerializer(serializers.ModelSerializer):
         list_serializer_class = BulkCitizensSerializer
 
 
-class ImportDetailSerializer(serializers.ModelSerializer):
-
+class CitizenInfoGetSerializer(serializers.ModelSerializer):
+    """Базовый сериализатор модели для GET запросов"""
     class Meta:
         model = CitizenInfo
         exclude = ['id', 'import_id', ]
@@ -165,7 +156,10 @@ class PatchSerializer(serializers.ModelSerializer):
         raise serializers.ValidationError("Citizen_id can't be changed")
 
     def validate_birth_date(self, value):
-        """Проверяем, чтобы дата была не позже чем сегодня"""
+        """
+        Валидация дня рождения
+        Проверяем, чтобы дата была не позже чем сегодня
+        """
         birth_date = value
         current_date = datetime.now().date()
         if birth_date > current_date:
@@ -203,10 +197,8 @@ class PatchSerializer(serializers.ModelSerializer):
         relatives_id_list = []
         # Сюда попадает None
         # TODO исправить!
-        if relatives_pk:
+        if None not in relatives_pk:
             for relative_pk in relatives_pk:
-                if relative_pk == None:
-                    break
                 relative_id = get_object_or_404(CitizenInfo,
                                                 pk=relative_pk).citizen_id
                 relatives_id_list.append(relative_id)
@@ -215,8 +207,7 @@ class PatchSerializer(serializers.ModelSerializer):
         # Нужный формат дня рождения
         JSON_birth_date = datetime.strptime(str(instance.birth_date),
                                             '%Y-%m-%d').strftime('%d.%m.%Y')
-        # Не нашел адекватного способа обойти ошибку сериализации m2m у
-        # instance, поэтому вручную возвращаю ответ
+        # Составляем ответ вручную
         return {"citizen_id": instance.citizen_id,
                 "town": instance.town,
                 "street": instance.street,
@@ -226,11 +217,3 @@ class PatchSerializer(serializers.ModelSerializer):
                 "birth_date": JSON_birth_date,
                 "gender": instance.gender,
                 "relatives": relatives_id_list}
-
-
-class CitizensAgeSerializer(serializers.ModelSerializer):
-
-    class Meta:
-        model = CitizenInfo
-        exclude = ['id', 'import_id', ]
-
