@@ -2,20 +2,19 @@ from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 
-from .serializers import CitizenListSerializer, CitizenInfoGetSerializer, \
-    PatchSerializer
+from .serializers import PostSerializer, \
+    PatchSerializer, BaseCitizenInfoSerializer
 from .models import CitizenInfo
 
-from django.shortcuts import get_object_or_404
 from django.db.models import Max
 
 from datetime import datetime
 import numpy as np
 
 
-
 def get_current_import():
     """Определяет номер текущего импорта для POST запроса"""
+    # Достаем номер последнего импорта в БД
     previous_import_id = CitizenInfo.objects.aggregate(Max('import_id'))[
         'import_id__max']
     if not previous_import_id:
@@ -23,31 +22,20 @@ def get_current_import():
     current_import_id = previous_import_id + 1
     return current_import_id
 
+
 class CitizenInfoView(APIView):
 
     def get(self, request, import_id):
         """Возвращает список граждан текущего импорта"""
+        # Проверяем существует ли запрошенный import_id
+        # Функция get_current_import() находит последний в БД import_id + 1,
+        # поэтому используем >=. По ТЗ отдаем 400 на всех плохие запросы
+        if import_id >= get_current_import():
+            return Response(
+                "import_id does not exist",
+                status=status.HTTP_400_BAD_REQUEST)
         all_import_citizens = CitizenInfo.objects.filter(import_id=import_id)
-        serializer = CitizenInfoGetSerializer(all_import_citizens, many=True)
-        # У каждого объекта приводим уникальный в рамках всех импортов номер
-        # родственника из бд к уникальному в рамках импорта для отображения
-        for citizen in serializer.data:
-            # Преобразуем birth_date к требуемому формату
-            db_birth_date = citizen.pop('birth_date')
-            JSON_birth_date = datetime.strptime(db_birth_date,
-                                                '%Y-%m-%d').strftime('%d.%m.%Y')
-            # Вставляем обратно
-            citizen['birth_date'] = JSON_birth_date
-            # Преобразуем relatives к нужному формату
-            relatives_pk_list = citizen.pop('relatives')
-            relatives_id_list = []
-            # Получаем id родственника по его pk
-            for relative_pk in relatives_pk_list:
-                relative_obj = all_import_citizens.get(pk=relative_pk)
-                relative_id = getattr(relative_obj, 'citizen_id')
-                relatives_id_list.append(relative_id)
-            # Вставляем обратно
-            citizen['relatives'] = relatives_id_list
+        serializer = BaseCitizenInfoSerializer(all_import_citizens, many=True)
         return Response({"data": serializer.data})
 
 
@@ -60,15 +48,25 @@ class CitizenInfoImportView(APIView):
         try:
             citizens = request.data.pop('citizens')
         except:
-            return Response('JSON should represent a dict {"citizens": value} '
+            return Response('JSON should represent a dict {"citizens": [values]} '
                             'with correct value-type object',
                             status=status.HTTP_400_BAD_REQUEST)
+        # Проверяем, что value в {citizens: [values]} это непустой лист.
+        # Ожидаю ключ в виде непустого списка словарей объектов, иначе
+        # какой смысл делать импорт. В ТЗ явно не указано
+        if isinstance(citizens, list) and len(citizens) > 0:
+            pass
+        else:
+            return Response('JSON should represent a dict {"citizens": [values]} '
+                            'with correct value-type object',
+                            status=status.HTTP_400_BAD_REQUEST)
+
         # Определяем номер текущего импорта для POST запроса
         current_import_id = get_current_import()
-        serializer = CitizenListSerializer(context={"current_import_id":
+        serializer = PostSerializer(context={"current_import_id":
                                                     current_import_id},
-                                           data=citizens,
-                                           many=True)
+                                    data=citizens,
+                                    many=True)
         if serializer.is_valid():
             serializer.save()
             current_import_id = serializer.context['current_import_id']
@@ -78,7 +76,6 @@ class CitizenInfoImportView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-
 class CitizenPatch(APIView):
 
     def patch(self, request, import_id, citizen_id):
@@ -86,11 +83,21 @@ class CitizenPatch(APIView):
         Частичное либо полное обновление инстанса.
         citizen_id изменять запрещено.
         """
-        # TODO поменять либо описать 404 возвраты, а то неясно откуда.
-        # 404 если гражданин не найден
-        citizen_object = get_object_or_404(CitizenInfo,
-                                           import_id=import_id,
-                                           citizen_id=citizen_id)
+        # 400 если гражданин не найден.
+        # Можно использовать get_object_or_404, но ТЗ говорит 400
+        # (вдруг робот не поймет).
+        try:
+            citizen_object = CitizenInfo.objects.get(import_id=import_id,
+                                                     citizen_id=citizen_id)
+        except:
+            return Response('Requesting citizen not found',
+                            status=status.HTTP_400_BAD_REQUEST)
+        # Валидацию на наличие данных делаем здесь (если делать
+        # в сериализаторе, то чет выдает ошибку в serializer.errors
+        # "ValueError: too many values to unpack (expected 2)"
+        if not request.data:
+            return Response("Input data can't be empty",
+                            status=status.HTTP_400_BAD_REQUEST)
         serializer = PatchSerializer(instance=citizen_object, data=request.data,
                                      partial=True)
         if serializer.is_valid():
@@ -107,17 +114,25 @@ class CitizensPresentsView(APIView):
         Получаем список месяцев, в каждом указан номер гражданина из
         импорта и сколько подарков в этом месяце он должен подарить.
         """
+        # Проверяем существует ли запрошенный import_id
+        # Функция get_current_import() находит последний в БД import_id + 1,
+        # поэтому используем >=. По ТЗ отдаем 400 на всех плохие запросы
+        if import_id >= get_current_import():
+            return Response(
+                "import_id does not exist",
+                status=status.HTTP_400_BAD_REQUEST)
         all_import_citizens = CitizenInfo.objects.filter(import_id=import_id)
         # Можно без сериализации, но так удобнее
-        serializer = CitizenInfoGetSerializer(all_import_citizens, many=True)
+        serializer = BaseCitizenInfoSerializer(all_import_citizens, many=True)
         # Определяем структуру ответа
         result_dict = {"1": [], "2": [], "3": [], "4": [], "5": [], "6": [],
                        "7": [], "8": [], "9": [], "10": [], "11": [], "12": []}
         for citizen in serializer.data:
             citizen_id = citizen.get('citizen_id')
-            relatives_pk_list = citizen.get('relatives')
-            if relatives_pk_list:
-                relatives_obj = all_import_citizens.filter(pk__in=relatives_pk_list)
+            relatives_id_list = citizen.get('relatives')
+            if relatives_id_list:
+                relatives_obj = all_import_citizens.\
+                                        filter(citizen_id__in=relatives_id_list)
                 for month in result_dict:
                     # Считаем число родственников с ДР в этом месяце (подарки)
                     presents = relatives_obj.filter(
@@ -130,11 +145,18 @@ class CitizensPresentsView(APIView):
 
 
 class CitizensAgeView(APIView):
-    def get(self, requset, import_id):
+    def get(self, request, import_id):
         """
         Возвращает значение перцентилей по возрасту для каждого города
         из импорта.
         """
+        # Проверяем существует ли запрошенный import_id
+        # Функция get_current_import() находит последний в БД import_id + 1,
+        # поэтому используем >=. По ТЗ отдаем 400 на всех плохие запросы
+        if import_id >= get_current_import():
+            return Response(
+                "import_id does not exist",
+                status=status.HTTP_400_BAD_REQUEST)
         all_import_citizens = CitizenInfo.objects.filter(import_id=import_id)
         # Уникальный список всех городов из импорта
         town_list = all_import_citizens.order_by(
@@ -148,13 +170,15 @@ class CitizensAgeView(APIView):
                 # Вычисляем возраст каждого человека
                 birth_date = citizen.birth_date
                 current_date = datetime.now().date()
+                # Дельта в днях
                 delta_date = (current_date - birth_date).days
-                # year_date = float(date) / 365.2425
-                difference_in_years = delta_date / 365.2425
-                age_list.append(difference_in_years)
+                # Полных лет
+                age = delta_date // 365.2425
+                age_list.append(age)
             result_dict = {}
-            # Находим перцентили возраста для каждого города
             age_list = np.array(age_list)
+            # Находим перцентили возраста для каждого города
+            # Округляем до 2 после запятой
             p50 = round(np.percentile(age_list, 50), 2)
             p75 = round(np.percentile(age_list, 75), 2)
             p99 = round(np.percentile(age_list, 99), 2)

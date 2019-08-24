@@ -1,6 +1,5 @@
 from django.db import models
 
-# Create your models here.
 
 GENDER_CHOICES = [
     ("male", "male"),
@@ -10,11 +9,11 @@ GENDER_CHOICES = [
 class CitizenInfo(models.Model):
     citizen_id = models.PositiveIntegerField()
     import_id = models.PositiveIntegerField()
-    town = models.CharField(max_length=255)
-    street = models.CharField(max_length=255)
-    building = models.CharField(max_length=255)
+    town = models.CharField(max_length=256)
+    street = models.CharField(max_length=256)
+    building = models.CharField(max_length=256)
     apartment = models.PositiveIntegerField()
-    name = models.CharField(max_length=255)
+    name = models.CharField(max_length=256)
     # Хранит значения в виде Y-m-d. При сериализации
     # преобразуем в d.m.Y
     birth_date = models.DateField()
