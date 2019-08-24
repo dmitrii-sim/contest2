@@ -12,6 +12,7 @@ class PostCitizensTest(TestCase):
     """ Тест POST запроса """
 
     def setUp(self):
+        # Валидные данные
         self.valid_payload = {
    "citizens":[
       {
@@ -56,8 +57,12 @@ class PostCitizensTest(TestCase):
       }
    ]
 }
+        # Невалидные данные
+        # пустой список в значении словаря citizens
         self.invalid_payload1 = {"citizens":[]}
-        self.invalid_payload2 = {"citizens":[{}]}
+        # список из пустых словарей в значении словаря citizens
+        self.invalid_payload2 = {"citizens":[{}, {}]}
+        # неверный ключ словаря citizens
         self.invalid_payload3 = {"cins":[
                             {
                                 "citizen_id":1,
@@ -70,6 +75,7 @@ class PostCitizensTest(TestCase):
                                 "gender":"male",
                                 "relatives":[]
                             }]}
+        # citizen_id с типом str
         self.invalid_payload4 = {"citizens":[
                             {
                                 "citizen_id":"1",
@@ -82,6 +88,7 @@ class PostCitizensTest(TestCase):
                                 "gender":"male",
                                 "relatives":[]
                             }]}
+        # town типа int
         self.invalid_payload5 = {"citizens":[
                             {
                                 "citizen_id":1,
@@ -94,6 +101,7 @@ class PostCitizensTest(TestCase):
                                 "gender":"male",
                                 "relatives":[]
                             }]}
+        # apartment тиа str
         self.invalid_payload6 = {"citizens":[
                             {
                                 "citizen_id":1,
@@ -106,6 +114,7 @@ class PostCitizensTest(TestCase):
                                 "gender":"male",
                                 "relatives":[]
                             }]}
+        # День рождения больше текущей даты (актуально до 27.12.2050)
         self.invalid_payload7 = {"citizens":[
                             {
                                 "citizen_id":1,
@@ -118,6 +127,7 @@ class PostCitizensTest(TestCase):
                                 "gender":"male",
                                 "relatives":[]
                             }]}
+        # Пол не совпадает с предопределенными значениями "male", "female"
         self.invalid_payload8 = {"citizens":[
                             {
                                 "citizen_id":1,
@@ -130,6 +140,7 @@ class PostCitizensTest(TestCase):
                                 "gender":"transgender",
                                 "relatives":[]
                             }]}
+        # Указан несуществующий родственник
         self.invalid_payload9 = {"citizens":[
                             {
                                 "citizen_id":1,
@@ -142,6 +153,7 @@ class PostCitizensTest(TestCase):
                                 "gender":"male",
                                 "relatives":[5]
                             }]}
+        # Несуществующая дата
         self.invalid_payload10 = {"citizens":[
                             {
                                 "citizen_id":1,
@@ -154,6 +166,7 @@ class PostCitizensTest(TestCase):
                                 "gender":"male",
                                 "relatives":[]
                             }]}
+        # id одного из родственников типа str
         self.invalid_payload11 = {"citizens": [
             {
                 "citizen_id": 1,
@@ -177,6 +190,7 @@ class PostCitizensTest(TestCase):
                 "relatives": [1]
             }
         ]}
+        # у второго гражданина родственник указан без списка
         self.invalid_payload12 = {"citizens": [
             {
                 "citizen_id": 1,
@@ -200,6 +214,7 @@ class PostCitizensTest(TestCase):
                 "relatives": 1
             }
         ]},
+        # у второго гражданина пропущено обязательное поле name
         self.invalid_payload13 = {"citizens": [
             {
                 "citizen_id": 1,
@@ -222,6 +237,7 @@ class PostCitizensTest(TestCase):
                 "relatives": [1]
             }
         ]}
+        # не совпадают входные списки родственников у граждан
         self.invalid_payload14 = {"citizens": [
             {
                 "citizen_id": 1,
@@ -254,6 +270,7 @@ class PostCitizensTest(TestCase):
                                  self.invalid_payload13, self.invalid_payload14]
 
     def test_post_valid_citizens(self):
+        """Тест на получение валидного ответа"""
         response = client.post(
             reverse('post_citizens'),
             data=json.dumps(self.valid_payload),
@@ -274,7 +291,7 @@ class PostCitizensTest(TestCase):
 
 
 class GetCitizensFromImportTest(TestCase):
-    """Тест для GET запросов"""
+    """Тест для GET запроса списка граждан из импорта"""
 
     def setUp(self):
         self.citizen1 = CitizenInfo.objects.create(
