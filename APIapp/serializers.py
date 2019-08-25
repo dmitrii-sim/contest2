@@ -2,14 +2,9 @@ from rest_framework import serializers
 from rest_framework.fields import empty
 from rest_framework.settings import api_settings
 
-from .models import CitizenInfo
+from .models import CitizenInfo, ImportId
 
 from datetime import datetime
-
-
-# Словарь citizen_id: relatives_id в рамках импорта, для валидации relative
-# в POST запросе
-relatives_dict = {}
 
 
 class TrueIntegerField(serializers.IntegerField):
@@ -113,9 +108,9 @@ class BaseCitizenInfoSerializer(serializers.ModelSerializer):
         }
 
 
-def save_citizens(citizen_data, current_import_id):
+def save_citizens(citizen_data, new_import):
     """Логика полного сохранения гражданина"""
-    new_citizen = CitizenInfo(import_id=current_import_id,
+    new_citizen = CitizenInfo(import_id=new_import,
                               citizen_id=citizen_data.get('citizen_id'),
                               town=citizen_data.get('town'),
                               street=citizen_data.get('street'),
@@ -125,13 +120,11 @@ def save_citizens(citizen_data, current_import_id):
                               birth_date=citizen_data.get('birth_date'),
                               gender=citizen_data.get('gender'),
                               )
-    # Тут допустимо сохранить объект, так как добавление m2m поля должно
-    # быть к существующему объекту и по одному инстансу.
     # К этому моменту мы уверены, что все данные прошли валидацию.
-    # (иначе может засориться БД и сбиться очерёдность import_id)
+    # Сохраняем объект, чтобы было проще искать нужных нам родственников ниже
     new_citizen.save()
     # Далее достаем сохраненные объекты данного импорта уже из БД
-    importing_citizens = CitizenInfo.objects.filter(import_id=current_import_id)
+    importing_citizens = CitizenInfo.objects.filter(import_id=new_import)
     # Поле родственников будем сохранять постепенно, по мере создания граждан
     relatives_id_list = citizen_data.get('relatives')
     # В рамках одного импорта citizen_id == relative_id
@@ -157,6 +150,7 @@ class BulkCitizensSerializer(serializers.ListSerializer):
     def create(self, validated_data):
         """Здесь валидация поля relatives, а так же сохранение объектов"""
         # Валидация поля relatives у всех граждан.
+        relatives_dict = self.context.pop('relatives_dict')
         for citizen_data in validated_data:
             citizen_id = citizen_data.get('citizen_id')
             for relative_id in citizen_data.get('relatives'):
@@ -176,12 +170,16 @@ class BulkCitizensSerializer(serializers.ListSerializer):
                 elif citizen_id not in relatives_dict[relative_id]:
                     raise serializers.ValidationError(
                         'At least one of the relatives_id is not matching.')
-        # Достаем из контекста номер текущего импорта
-        current_import_id = self.context.get('current_import_id')
         # Сохраняем валидные объект
+        # Создаем инстанс текущего импорта, чтобы далее присвоить к
+        # новым объектам CitizenInfo
+        new_import = ImportId.objects.create()
+        import_id = new_import.import_id
+        # Кладем номер импорта в контекст
+        self.context["import_id"] = import_id
         for citizen_data in validated_data:
-            save_citizens(citizen_data, current_import_id)
-        return CitizenInfo.objects.filter(import_id=current_import_id)
+            save_citizens(citizen_data, new_import)
+        return ImportId.objects.filter(import_id=import_id)
 
 
 class PostSerializer(BaseCitizenInfoSerializer):
@@ -204,8 +202,15 @@ class PostSerializer(BaseCitizenInfoSerializer):
         citizen_id = data['citizen_id']
         relatives_id_list = data['relatives']
         # Добавляем список id родственников в общий словарь граждан
-        relatives_dict[citizen_id] = relatives_id_list
+        self.context['relatives_dict'][citizen_id] = relatives_id_list
         return super(PostSerializer, self).run_validation(data)
+
+    def to_representation(self, instance):
+        """
+        Перезаписываем базовое представление.
+        Возвращаем только инстанс импорта.
+        """
+        return instance
 
     class Meta:
         model = CitizenInfo

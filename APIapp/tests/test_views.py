@@ -2,10 +2,36 @@ import json
 from rest_framework import status
 from django.test import TestCase, Client
 from django.urls import reverse
-from ..models import CitizenInfo
+from ..models import CitizenInfo, ImportId
+import datetime
 
 
+# Глобально определяем дефолтного клиента
 client = Client()
+
+
+class TestCaseInitialData(TestCase):
+    """Начальный setup для Get и Patch"""
+    def setUp(self):
+        # Создаем инстанс импорта
+        self.import_instance = ImportId.objects.create()
+        self.citizen1 = CitizenInfo.objects.create(
+            citizen_id=1, import_id=self.import_instance, town="Москва", street="Льва Толстого",
+            building="16к7стр5", apartment=7, name="Иванов Иван Иванович",
+            birth_date="1986-12-26", gender="male"
+        )
+        self.citizen2 = CitizenInfo.objects.create(
+            citizen_id=2, import_id=self.import_instance, town="Москва", street="Льва Толстого",
+            building="16к7стр5", apartment=7, name="Иванов Сергей Иванович",
+            birth_date="1997-04-01", gender="male"
+        )
+        self.citizen3 = CitizenInfo.objects.create(
+            citizen_id=3, import_id=self.import_instance, town="Керчь", street="Иосифа Бродского",
+            building="2", apartment=11, name="Романова Мария Леонидовна",
+            birth_date="1986-11-23", gender="female"
+        )
+        # Добавляем m2m, она симметрична
+        self.citizen1.relatives.add(self.citizen2, self.citizen3)
 
 
 class PostCitizensTest(TestCase):
@@ -276,7 +302,14 @@ class PostCitizensTest(TestCase):
             data=json.dumps(self.valid_payload),
             content_type='application/json'
         )
-        self.assertEqual(response.data, {'data': {'import_id': 1}})
+        # Джанговский AutoField в PostgreSQL обнуляется только при DROP TABLE.
+        # Поэтому, т.к в unittest используется своя БД, которая дропается
+        # при новом запуске, то номер импорта определим через его модель,
+        # так как при юниттесте конкретно этого блока - import_id = 1,
+        # а при общем запуске тест файла через консоль import_id равен
+        # колличеству вызовов create инстанса ImportId до него (но это не точно)
+        last_import = ImportId.objects.latest('import_id').import_id
+        self.assertEqual(response.data, {'data': {'import_id': last_import}})
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
 
     def test_post_invalid_citizens(self):
@@ -289,37 +322,46 @@ class PostCitizensTest(TestCase):
             )
             self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    def test_post_imports_production(self):
+        """Нагрузочное тестирование нескольких POST запросов"""
+        i = 0
+        while i < 100:
+            response = client.post(
+                reverse('post_citizens'),
+                data=json.dumps(self.valid_payload),
+                content_type='application/json'
+            )
+            last_import = ImportId.objects.latest('import_id').import_id
+            self.assertEqual(response.data,
+                             {'data': {'import_id': last_import}})
+            self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+            i += 1
 
-class GetCitizensFromImportTest(TestCase):
+
+class GetCitizensFromImportTest(TestCaseInitialData):
     """Тест для GET запроса списка граждан из импорта"""
 
-    def setUp(self):
-        self.citizen1 = CitizenInfo.objects.create(
-            citizen_id=1, import_id=1, town="Москва", street="Льва Толстого",
-            building="16к7стр5", apartment=7, name="Иванов Иван Иванович",
-            birth_date="1986-12-26", gender="male"
-        )
-        self.citizen2 = CitizenInfo.objects.create(
-            citizen_id=2, import_id=1, town="Москва", street="Льва Толстого",
-            building="16к7стр5", apartment=7, name="Иванов Сергей Иванович",
-            birth_date="1997-04-01", gender="male"
-        )
-        self.citizen3 = CitizenInfo.objects.create(
-            citizen_id=3, import_id=1, town="Керчь", street="Иосифа Бродского",
-            building="2", apartment=11, name="Романова Мария Леонидовна",
-            birth_date="1986-11-23", gender="female"
-        )
-        # Добавляем m2m, она симметрична
-        self.citizen1.relatives.add(self.citizen2, self.citizen3)
+    # Заранее известный результат
+    expected_data = {'data': [
+        {'citizen_id': 1, 'town': 'Москва', 'street': 'Льва Толстого',
+         'building': '16к7стр5', 'apartment': 7,
+         'name': 'Иванов Иван Иванович', 'birth_date': '26.12.1986',
+         'gender': 'male', 'relatives': [2, 3]},
+        {'citizen_id': 2, 'town': 'Москва', 'street': 'Льва Толстого',
+         'building': '16к7стр5', 'apartment': 7,
+         'name': 'Иванов Сергей Иванович', 'birth_date': '01.04.1997',
+         'gender': 'male', 'relatives': [1]},
+        {'citizen_id': 3, 'town': 'Керчь', 'street': 'Иосифа Бродского',
+         'building': '2', 'apartment': 11,
+         'name': 'Романова Мария Леонидовна', 'birth_date': '23.11.1986',
+         'gender': 'female', 'relatives': [1]}]}
 
     def test_get_valid_import_citizens_list(self):
         """Тест статуса и ответа сервера при валидном запросе"""
         response = client.get(
             reverse('get_all_import_citizens',
-                    kwargs={'import_id': self.citizen1.import_id}))
-        # Заранее известный результат
-        correct_response = {'data': [{'citizen_id': 1, 'town': 'Москва', 'street': 'Льва Толстого', 'building': '16к7стр5', 'apartment': 7, 'name': 'Иванов Иван Иванович', 'birth_date': '26.12.1986', 'gender': 'male', 'relatives': [2, 3]}, {'citizen_id': 2, 'town': 'Москва', 'street': 'Льва Толстого', 'building': '16к7стр5', 'apartment': 7, 'name': 'Иванов Сергей Иванович', 'birth_date': '01.04.1997', 'gender': 'male', 'relatives': [1]}, {'citizen_id': 3, 'town': 'Керчь', 'street': 'Иосифа Бродского', 'building': '2', 'apartment': 11, 'name': 'Романова Мария Леонидовна', 'birth_date': '23.11.1986', 'gender': 'female', 'relatives': [1]}]}
-        self.assertEqual(response.data, correct_response)
+                    kwargs={'import_id': self.import_instance.import_id}))
+        self.assertEqual(response.data, self.expected_data)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
     def test_get_invalid_import_citizens_list(self):
@@ -328,28 +370,42 @@ class GetCitizensFromImportTest(TestCase):
             reverse('get_all_import_citizens', kwargs={'import_id': 10}))
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    def test_get_valid_import_citizens_list_production(self):
+        """
+        Нагрузочное тестирование статуса и ответа сервера при валидном запросе
+        """
+        i = 0
+        while i < 100:
+            response = client.get(
+                   reverse('get_all_import_citizens',
+                            kwargs={'import_id': self.import_instance.import_id}))
+            self.assertEqual(response.data, self.expected_data)
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+            i += 1
 
-class PatchCitizenTest(TestCase):
-    """ Тест PATCH запроса """
+
+class PatchCitizenTest(TestCaseInitialData):
+    """
+    Тест PATCH запроса
+    Чтобы провести нагрузочное тестирование patch запроса используем пару
+    начальных валидных данных и пару ожидаемых значений и меняем их в цикле.
+    """
     def setUp(self):
-        self.citizen1 = CitizenInfo.objects.create(
-            citizen_id=1, import_id=1, town="Москва", street="Льва Толстого",
-            building="16к7стр5", apartment=7, name="Иванов Иван Иванович",
-            birth_date="1986-12-26", gender="male"
-        )
-        self.citizen2 = CitizenInfo.objects.create(
-            citizen_id=2, import_id=1, town="Москва", street="Льва Толстого",
-            building="16к7стр5", apartment=7, name="Иванов Сергей Иванович",
-            birth_date="1997-04-01", gender="male"
-        )
-        self.citizen3 = CitizenInfo.objects.create(
-            citizen_id=3, import_id=1, town="Керчь", street="Иосифа Бродского",
-            building="2", apartment=11, name="Романова Мария Леонидовна",
-            birth_date="1986-11-23", gender="female"
-        )
-        # Добавляем m2m, она симметрична
-        self.citizen1.relatives.add(self.citizen2)
-        self.valid_payload = {
+        """
+        Наследуемся от начального набора данных и добавляем
+        валидные и невалидные случаи PATCH запросов
+        """
+        super(PatchCitizenTest, self).setUp()
+        # Валидный набор данных
+        self.valid_payload1 = {
+            "town": "Не Москва",
+            "street": "Льва Толстого",
+            "building": "16к7стр5",
+            "apartment": 7,
+            "name": "Иванова Мария Леонидовна",
+            "relatives": [1]
+        }
+        self.valid_payload2 = {
             "town": "Москва",
             "street": "Льва Толстого",
             "building": "16к7стр5",
@@ -357,25 +413,33 @@ class PatchCitizenTest(TestCase):
             "name": "Иванова Мария Леонидовна",
             "relatives": [1]
         }
+        # Невалидные наборы
+        # Пустой словарь
         self.invalid_payload1 = {}
+        # citizen_id менять запрещено
         self.invalid_payload2 = {
             "citizen_id": 1,
             "town": "Москва"
         }
+        # Неизвестное поле
         self.invalid_payload3 = {
             "tn": "Москва",
         }
+        # Невалидная дата
         self.invalid_payload4 = {
             "birth_date": "-26.12.1986",
             "gender": "male",
             "relatives": []
         }
+        # Пол указан вне предопределенных значений
         self.invalid_payload5 = {
             "gender": "apache69",
         }
+        # Отрицательные числа запрещены
         self.invalid_payload9 = {
             "apartment": -7,
         }
+        # Значения списка родственников должны быть только целые числа
         self.invalid_payload10 = {
             "relatives": ["2"]
         }
@@ -383,20 +447,31 @@ class PatchCitizenTest(TestCase):
                                  self.invalid_payload3, self.invalid_payload4,
                                  self.invalid_payload5, self.invalid_payload9,
                                  self.invalid_payload10]
-        # Добавляем m2m, она симметрична
-        self.citizen1.relatives.add(self.citizen2)
+        # Ожидаемый результат
+        self.expected_data1 = {'data': {'citizen_id': 1, 'town': 'Не Москва',
+                                     'street': 'Льва Толстого',
+                                     'building': '16к7стр5', 'apartment': 7,
+                                     'name': 'Иванова Мария Леонидовна',
+                                     'birth_date': '26.12.1986',
+                                     'gender': 'male', 'relatives': [1]}}
+        # Разные значения поля town.
+        self.expected_data2 = {'data': {'citizen_id': 1, 'town': 'Москва',
+                                        'street': 'Льва Толстого',
+                                        'building': '16к7стр5', 'apartment': 7,
+                                        'name': 'Иванова Мария Леонидовна',
+                                        'birth_date': '26.12.1986',
+                                        'gender': 'male', 'relatives': [1]}}
 
     def test_valid_patch_citizen(self):
-        """Тест успешный ответ и статус"""
+        """Тест валидные данные, ответ и статус"""
         response = client.patch(
             reverse('patch_citizen',
-                    kwargs={'import_id': self.citizen1.import_id,
+                    kwargs={'import_id': self.import_instance.import_id,
                             'citizen_id': self.citizen1.citizen_id}),
-            data=json.dumps(self.valid_payload),
+            data=json.dumps(self.valid_payload1),
             content_type='application/json'
         )
-        correct_response = {'data': {'citizen_id': 1, 'town': 'Москва', 'street': 'Льва Толстого', 'building': '16к7стр5', 'apartment': 7, 'name': 'Иванова Мария Леонидовна', 'birth_date': '26.12.1986', 'gender': 'male', 'relatives': [1]}}
-        self.assertEqual(response.data, correct_response)
+        self.assertEqual(response.data, self.expected_data1)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
     def test_invalid_patch_citizen(self):
@@ -404,42 +479,60 @@ class PatchCitizenTest(TestCase):
         for invalid_payload in self.invalid_payloads:
             response = client.patch(
                 reverse('patch_citizen',
-                        kwargs={'import_id': self.citizen1.import_id,
+                        kwargs={'import_id': self.import_instance.import_id,
                                 'citizen_id': self.citizen1.citizen_id}),
                 data=json.dumps(invalid_payload),
                 content_type='application/json')
             self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
-class GetPresents(TestCase):
+    def test_valid_patch_citizen_production(self):
+        """Нагрузочный тест валидного PATCH запроса. Две пары значений"""
+        i = 0
+        flag = True
+        while i < 100:
+            if flag:
+                response = client.patch(
+                    reverse('patch_citizen',
+                            kwargs={'import_id': self.import_instance.import_id,
+                                    'citizen_id': self.citizen1.citizen_id}),
+                    data=json.dumps(self.valid_payload1),
+                    content_type='application/json'
+                )
+                self.assertEqual(response.data, self.expected_data1)
+                self.assertEqual(response.status_code, status.HTTP_200_OK)
+                flag = False
+            elif not flag:
+                response = client.patch(
+                    reverse('patch_citizen',
+                            kwargs={'import_id': self.import_instance.import_id,
+                                    'citizen_id': self.citizen1.citizen_id}),
+                    data=json.dumps(self.valid_payload2),
+                    content_type='application/json'
+                )
+                self.assertEqual(response.data, self.expected_data2)
+                self.assertEqual(response.status_code, status.HTTP_200_OK)
+                flag = True
+            i += 1
+
+
+class GetPresents(TestCaseInitialData):
     """Тест GET список подарков"""
 
-    def setUp(self):
-        self.citizen1 = CitizenInfo.objects.create(
-            citizen_id=1, import_id=1, town="Москва", street="Льва Толстого",
-            building="16к7стр5", apartment=7, name="Иванов Иван Иванович",
-            birth_date="1986-12-26", gender="male"
-        )
-        self.citizen2 = CitizenInfo.objects.create(
-            citizen_id=2, import_id=1, town="Москва", street="Льва Толстого",
-            building="16к7стр5", apartment=7, name="Иванов Сергей Иванович",
-            birth_date="1997-04-01", gender="male"
-        )
-        self.citizen3 = CitizenInfo.objects.create(
-            citizen_id=3, import_id=1, town="Керчь", street="Иосифа Бродского",
-            building="2", apartment=11, name="Романова Мария Леонидовна",
-            birth_date="1986-11-23", gender="female"
-        )
-        # Добавляем m2m, она симметрична
-        self.citizen1.relatives.add(self.citizen2, self.citizen3)
+    # Заранее известный результат
+    expected_data = {'data': {'1': [], '2': [], '3': [],
+                                 '4': [{'citizen_id': 1, 'presents': 1}],
+                                 '5': [], '6': [], '7': [], '8': [], '9': [],
+                                 '10': [],
+                                 '11': [{'citizen_id': 1, 'presents': 1}],
+                                 '12': [{'citizen_id': 2, 'presents': 1},
+                                        {'citizen_id': 3, 'presents': 1}]}}
 
     def test_get_valid_presents(self):
         """Тест статуса и ответа сервера при валидном запросе"""
         response = client.get(
             reverse('get_presents',
-                    kwargs={'import_id': self.citizen1.import_id}))
-        # Заранее известный результат
-        correct_response = {'data': {'1': [], '2': [], '3': [], '4': [{'citizen_id': 1, 'presents': 1}], '5': [], '6': [], '7': [], '8': [], '9': [], '10': [], '11': [{'citizen_id': 1, 'presents': 1}], '12': [{'citizen_id': 2, 'presents': 1}, {'citizen_id': 3, 'presents': 1}]}}
-        self.assertEqual(response.data, correct_response)
+                    kwargs={'import_id': self.import_instance.import_id}))
+        self.assertEqual(response.data, self.expected_data)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
     def test_get_invalid_presents(self):
@@ -448,37 +541,32 @@ class GetPresents(TestCase):
             reverse('get_presents', kwargs={'import_id': 10}))
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    def test_get_valid_presents_production(self):
+        """Нагрузочное тестирование"""
+        i = 0
+        while i < 100:
+            response = client.get(
+                reverse('get_presents',
+                        kwargs={'import_id': self.import_instance.import_id}))
+            self.assertEqual(response.data, self.expected_data)
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+            i += 1
 
-class GetPercentileAge(TestCase):
+
+class GetPercentileAge(TestCaseInitialData):
     """Тест GET перцентили возрастов"""
 
-    def setUp(self):
-        self.citizen1 = CitizenInfo.objects.create(
-            citizen_id=1, import_id=1, town="Москва", street="Льва Толстого",
-            building="16к7стр5", apartment=7, name="Иванов Иван Иванович",
-            birth_date="1986-12-26", gender="male"
-        )
-        self.citizen2 = CitizenInfo.objects.create(
-            citizen_id=2, import_id=1, town="Москва", street="Льва Толстого",
-            building="16к7стр5", apartment=7, name="Иванов Сергей Иванович",
-            birth_date="1997-04-01", gender="male"
-        )
-        self.citizen3 = CitizenInfo.objects.create(
-            citizen_id=3, import_id=1, town="Керчь", street="Иосифа Бродского",
-            building="2", apartment=11, name="Романова Мария Леонидовна",
-            birth_date="1986-11-23", gender="female"
-        )
-        # Добавляем m2m, она симметрична
-        self.citizen1.relatives.add(self.citizen2, self.citizen3)
+    # Заранее известный результат
+    expected_data = {
+        'data': [{'town': 'Керчь', 'p50': 32.0, 'p75': 32.0, 'p99': 32.0},
+                 {'town': 'Москва', 'p50': 27.0, 'p75': 29.5, 'p99': 31.9}]}
 
     def test_get_valid_percentile_age(self):
         """Тест статуса и ответа сервера при валидном запросе"""
         response = client.get(
             reverse('get_percentile_age',
-                    kwargs={'import_id': self.citizen1.import_id}))
-        # Заранее известный результат
-        correct_response = {'data': [{'town': 'Керчь', 'p50': 32.0, 'p75': 32.0, 'p99': 32.0}, {'town': 'Москва', 'p50': 27.0, 'p75': 29.5, 'p99': 31.9}]}
-        self.assertEqual(response.data, correct_response)
+                    kwargs={'import_id': self.import_instance.import_id}))
+        self.assertEqual(response.data, self.expected_data)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
     def test_get_invalid_percentile_age(self):
@@ -486,3 +574,14 @@ class GetPercentileAge(TestCase):
         response = client.get(
             reverse('get_percentile_age', kwargs={'import_id': 10}))
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_get_valid_percentile_age_production(self):
+        """Нагрузочное тестирование"""
+        i = 0
+        while i < 100:
+            response = client.get(
+                reverse('get_percentile_age',
+                        kwargs={'import_id': self.import_instance.import_id}))
+            self.assertEqual(response.data, self.expected_data)
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+            i += 1
