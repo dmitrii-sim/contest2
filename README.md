@@ -26,7 +26,7 @@ curl1 & curl2 & curl3 & curl4 ....
 # Подготовка виртуальной машины и развертывание приложения:
 На сервере используется ОС Ubuntu 18.04.3 LTS
 
-Для работы сервиса REST Api будем использовать связку:
+Для бесперебойной и автономной работы REST API сервиса на виртуальной машине будем использовать связку:
 
 **Django, Django REST Framework, Nginx, Gunicorn, PostgreSQL, Supervisor**
 
@@ -66,7 +66,7 @@ $ workon RestService
 $ cd contest2
 $ chmod 755 ./manage.py
 ```
-Устанваливаем все зависимости из файла проекта requirements.txt
+Устанавливаем все зависимости из файла проекта requirements.txt
 ```
 $ pip3 install -r requirements.txt
 ```
@@ -75,7 +75,7 @@ $ pip3 install -r requirements.txt
 ```
 $ sudo -u postgres psql
 ```
-Меняем пароль от суперюзера на нужный (к БД будем подключаться как суперюзер)
+Меняем пароль суперюзера на нужный (к БД будем подключаться как суперюзер)
 ```
 > ALTER USER postgres PASSWORD '*нужный пароль*';
 ```
@@ -158,7 +158,7 @@ server {
 ```
 $ ln -s /etc/nginx/sites-available/app /etc/nginx/sites-enabled
 ```
-Проверяем соединение Nginx, оно должно прослушивать порт *0.0.0.0:8080*:
+Проверяем соединение Nginx, оно должно прослушивать порт *:8080*:
 ```
 $ nginx -t
 ```
@@ -166,4 +166,6 @@ $ nginx -t
 ```
 $ systemctl restart nginx
 ```
+Теперь запросы по адресу *0.0.0.0:8080* (либо по ip внешней локальной сети) будут
+направляться на REST API сервис.
 Вы великолепны!
